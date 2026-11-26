@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Perception - Prototype 01</title>
+<style>
+*{box-sizing:border-box}body{margin:0;overflow:hidden;background:#101923;font-family:Arial,sans-serif;color:#eaf1f7}
+#overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,rgba(8,18,29,.88),rgba(25,40,54,.82));backdrop-filter:blur(8px);z-index:10}
+#start{background:linear-gradient(145deg,#f9fbfd,#e8eef3);color:#24313d;padding:34px 46px;text-align:center;border:1px solid #b8c7d2;box-shadow:0 24px 80px #0008;min-width:320px;max-width:92vw;border-radius:8px}#menuButtons{display:grid;gap:10px;margin:22px auto}#menuButtons button{width:100%;min-width:220px}#menuTitle{letter-spacing:7px;font-weight:700;color:#172b3b}#menuSubtitle{color:#718494;letter-spacing:3px;font-size:11px}
+button{padding:12px 28px;background:#e5f2fa;border:1px solid #9ab6c8;border-radius:3px;cursor:pointer;font-size:13px;font-weight:700;letter-spacing:1.2px;color:#233b4d;transition:background .15s,transform .15s}button:hover{background:#cce8f8;transform:translateY(-1px)}
+#hud{position:fixed;inset:0;pointer-events:none}
+#crosshair{position:absolute;top:50%;left:50%;width:10px;height:10px;border:1px solid rgba(230,244,255,.9);border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 8px #9edfff}
+#hint{position:absolute;bottom:28px;left:50%;transform:translateX(-50%);max-width:min(90vw,760px);padding:11px 18px;text-align:center;font-size:12px;letter-spacing:1.2px;color:#eaf4fb;background:rgba(12,25,37,.72);border:1px solid rgba(155,190,215,.35);border-radius:4px}
+#status{position:absolute;top:20px;left:20px;padding:9px 13px;font-size:11px;letter-spacing:2px;color:#dceaf3;background:rgba(12,25,37,.72);border:1px solid rgba(155,190,215,.3);border-radius:3px}
+</style>
+</head>
+<body>
+<div id="overlay"><div id="start">
+  <h2 id="menuTitle">PERCEPTION</h2><p id="menuSubtitle">EXPERIMENT 001</p>
+  <div id="menuButtons"></div>
+  <p id="menuFoot" style="font-size:12px;color:#888">WASD move · Space jump · Mouse look · E grab/release · F fuse/split · Q/R rotate · H collect headset · G switch dimension · Esc pause</p>
+</div></div>
+<div id="hud"><div id="status">RESEARCH FACILITY // TEST 001</div><div id="crosshair"></div><div id="hint"></div></div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+const H = 0.9;          // block height
+const EPS = 1e-4;
+const ROOM = 12;        // rooms stack along -Z, each 12 deep, no gaps
+
+// ---------- scene ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xfafafa);
+scene.fog = new THREE.Fog(0xfafafa, 40, 120);
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, .1, 200);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xeaf5ff,0x687887,1.65));
+scene.add(new THREE.AmbientLight(0xffffff,0.42));
+const keyLight = new THREE.DirectionalLight(0xffffff,2.0); keyLight.position.set(-8,14,10); scene.add(keyLight);
+const rimLight = new THREE.DirectionalLight(0x8fcfff,0.75); rimLight.position.set(8,7,-12); scene.add(rimLight);
+
+const whiteMat  = new THREE.MeshStandardMaterial({color:0xe9eef2, roughness:.72, metalness:.08});
+const floorMat  = new THREE.MeshStandardMaterial({color:0xcbd5dd, roughness:.62, metalness:.12});
+const ledgeMat  = new THREE.MeshStandardMaterial({color:0xaebdca, roughness:.58, metalness:.16});
+const doorMat   = new THREE.MeshStandardMaterial({color:0x667784, metalness:.55, roughness:.35});
+const boxMat    = new THREE.MeshStandardMaterial({color:0x999fa6, roughness:.65, metalness:.15});
+const fusedMat  = new THREE.MeshStandardMaterial({color:0xaab4c0, roughness:.6, metalness:.15, emissive:0x1a2633});
+const darkMat   = new THREE.MeshStandardMaterial({color:0x343b43, metalness:.45, roughness:.4});
+const cableMat  = new THREE.MeshStandardMaterial({color:0xff7900, emissive:0x4a1900, roughness:.42, metalness:.25});
+const room3CableMat = new THREE.MeshStandardMaterial({color:0xff7900, emissive:0x4a1900, roughness:.42, metalness:.25});
+const laserFloorMat = new THREE.MeshStandardMaterial({color:0x5b080d, emissive:0x8f0010, emissiveIntensity:1.5, roughness:.35, metalness:.25});
+const laserBeamMat = new THREE.MeshBasicMaterial({color:0xff1838});
+
+// ---------- geometry helpers ----------
+let dimension = 0; // 0 = facility, 1 = hidden dimension
+const solids = [];
+function addSolid(min, max, mat = whiteMat, dim = null) {
+  const size = [max[0]-min[0], max[1]-min[1], max[2]-min[2]];
+  const m = new THREE.Mesh(new THREE.BoxGeometry(...size), mat);
+  m.position.set((min[0]+max[0])/2, (min[1]+max[1])/2, (min[2]+max[2])/2);
+  scene.add(m);
+  const s = {min, max, active:true, mesh:m, dimension:dim};
+  solids.push(s);
+  return s;
+}
+function addVisual(min, max, mat, dim = null) {
+  const size = [max[0]-min[0], max[1]-min[1], max[2]-min[2]];
+  const m = new THREE.Mesh(new THREE.BoxGeometry(...size), mat);
+  m.position.set((min[0]+max[0])/2, (min[1]+max[1])/2, (min[2]+max[2])/2);
+  scene.add(m);
+  m.userData.dimension = dim;
+  if (dim !== null) m.visible = dim === dimension;
+  return m;
+}
+const ov = (a0,a1,b0,b1) => a0 < b1-EPS && a1 > b0+EPS;
+const boxHit = (a,b) => ov(a.min[0],a.max[0],b.min[0],b.max[0]) && ov(a.min[1],a.max[1],b.min[1],b.max[1]) && ov(a.min[2],a.max[2],b.min[2],b.max[2]);
+const boxesTouch = (a,b) => [0,1,2].every(i => a.min[i] <= b.max[i] + 0.001 && a.max[i] >= b.min[i] - 0.001);
+const ovXZ  = (a,b) => ov(a.min[0],a.max[0],b.min[0],b.max[0]) && ov(a.min[2],a.max[2],b.min[2],b.max[2]);
+
+// ---------- blocks ----------
+const blocks = [];
+const halfX = (b, rot=b.rot) => (rot ? b.long : b.wide)/2;
+const halfZ = (b, rot=b.rot) => (rot ? b.wide : b.long)/2;
+function blockBoxAt(b, x, y, z, rot=b.rot) {
+  const hx = halfX(b,rot), hz = halfZ(b,rot);
+  return {min:[x-hx, y-H/2, z-hz], max:[x+hx, y+H/2, z+hz]};
+}
+const blockBox = b => blockBoxAt(b, b.pos.x, b.pos.y, b.pos.z);
+function makeBlock(x, y, z, long, rot, dim = 0) {
+  const wide = 0.9;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(wide, H, long), boxMat);
+  scene.add(mesh);
+  const b = {mesh, pos:new THREE.Vector3(x,y,z), long, wide, rot, partner:null, vy:0, dimension:dim,
+             start:{x,y,z,rot,dimension:dim}};
+  mesh.visible = dim === dimension;
+  blocks.push(b);
+  return b;
+}
+
+// ---------- level data (local x, z relative to room centre) ----------
+const ROOMS = [
+  { // Room 1: block, ledge plate, cable to door
+    spawn:[0,4], south:true,
+    hint:'PUT THE BLOCK ON THE PRESSURE PLATE — FOLLOW THE ORANGE CABLE TO THE DOOR',
+    platforms:[
+      {x0:-6,x1:6,z0:-6,z1:6,top:0,thick:.2,mat:'floor'},
+      {x0:-5.75,x1:-3.55,z0:-3.25,z1:-1.75,top:2.225,thick:.35,mat:'ledge'}
+    ],
+    pits:[],
+    plate:{x:-4.65,z:-2.5,y:2.225},
+    blocks:[[0,-2.5,.9,0]],
+    doorX:[2,4]
+  },
+  { // Room 2: pit, fuse two blocks into a bridge
+    spawn:[3,0],
+    hint:'ALIGN BOTH BLOCKS ALONG X, FUSE, BRIDGE THE PIT, STAND ON THE PLATE',
+    platforms:[
+      {x0:-6,x1:-2,z0:-6,z1:6,top:0,thick:.2,mat:'floor'},
+      {x0:1.2,x1:6,z0:-6,z1:6,top:0,thick:.2,mat:'floor'}
+    ],
+    pits:[{x0:-2,x1:1.2,z0:-6,z1:6}],
+    plate:{x:4,z:0,y:0},
+    blocks:[[-4,-3,2,0],[-4,2,2,0],[-2.7,-.2,.9,0]],
+    doorX:[-4,-2]
+  },
+  { // Room 3: headset switches between two dimensions
+    spawn:[-3,4.7],
+    hint:'FIND THE HEADSET NEAR THE ENTRANCE — PRESS H TO PICK IT UP',
+    platforms:[
+      {x0:-8,x1:-1.8,z0:-6,z1:6,top:0,thick:.2,mat:'floor'},
+      {x0:1.2,x1:8,z0:-6,z1:6,top:0,thick:.2,mat:'floor'}
+    ],
+    pits:[{x0:-1.8,x1:1.2,z0:-6,z1:6}],
+    plate:{x:4,z:-2,y:0},
+    blocks:[],
+    doorX:[-4,-2],
+    southDoorX:[-4,-2]
+  },
+  { // Room 4: build one bridge, then place both pillars on two switches
+    spawn:[-4,4.7],
+    hint:'BUILD THE BRIDGE ACROSS THE GAP. THEN PUT BOTH PILLARS ON THE TWO BUTTONS TO OPEN THE DOOR.',
+    platforms:[
+      {x0:-8,x1:-2,z0:-6,z1:6,top:0,thick:.2,mat:'floor'},
+      {x0:2,x1:8,z0:-6,z1:6,top:0,thick:.2,mat:'floor'}
+    ],
+    pits:[{x0:-2,x1:2,z0:-6,z1:6}],
+    plate:{x:4.4,z:-3.1,y:0},
+    plate2:{x:6.4,z:2.6,y:0},
+    // Both bridge pillars are in the same dimension and are reused on the buttons.
+    blocks:[[-4,-2,2.4,1,0],[-4,2,2.4,1,0]],
+    doorX:[2,4],
+    southDoorX:[-4,-2]
+  }
+];
+
+// ---------- build level ----------
+const rooms = ROOMS.map((def, i) => {
+  const cz = -i * ROOM;
+  // Rooms 3 and 4 are wider than the first two test chambers.
+  const edge = i >= 2 ? 8 : 6;
+  addSolid([-edge-.1,0,cz-6],[-edge+.1,4,cz+6]);
+  addSolid([edge-.1,0,cz-6],[edge+.1,4,cz+6]);
+  // north wall with door gap (shared with the next room's south side)
+  addSolid([-edge,0,cz-6.1],[def.doorX[0],4,cz-5.9]);
+  addSolid([def.doorX[1],0,cz-6.1],[edge,4,cz-5.9]);
+  if (i === 3) addSolid([def.doorX[0],3.95,cz-6.1],[def.doorX[1],4,cz-5.9]);
+  else addSolid([def.doorX[0],2.8,cz-6.1],[def.doorX[1],4,cz-5.9]);
+  if (def.southDoorX) {
+    addSolid([-edge,0,cz+5.9],[def.southDoorX[0],4,cz+6.1]);
+    addSolid([def.southDoorX[1],0,cz+5.9],[edge,4,cz+6.1]);
+    addSolid([def.southDoorX[0],2.8,cz+5.9],[def.southDoorX[1],4,cz+6.1]);
+  } else if (def.south) addSolid([-edge,0,cz+5.9],[edge,4,cz+6.1]);
+  addSolid([-edge,4,cz-6],[edge,4.2,cz+6]); // roof
+
+  for (const p of def.platforms) {
+    addSolid([p.x0, p.top-p.thick, cz+p.z0], [p.x1, p.top, cz+p.z1], p.mat==='ledge' ? ledgeMat : floorMat);
+  }
+  for (const p of def.pits) {
+    // A visible laser death floor sits beneath every gap, so pits look
+    // dangerous instead of appearing to drop into an endless void.
+    const laserY = -3.5;
+    addVisual([p.x0,laserY-.18,cz+p.z0],[p.x1,laserY,cz+p.z1], laserFloorMat);
+    // Keep the pit floor clean: no distracting laser grid lines.
+  }
+
+  const plateX = def.plate.x, plateZ = cz + def.plate.z, plateY = def.plate.y;
+  const plateMat = new THREE.MeshStandardMaterial({color:0xc83b3b, emissive:0x330000, roughness:.4});
+  const plateDim = i === 2 ? 1 : null;
+  addVisual([plateX-.525,plateY,plateZ-.525],[plateX+.525,plateY+.07,plateZ+.525],darkMat,plateDim);
+  addVisual([plateX-.44,plateY+.07,plateZ-.44],[plateX+.44,plateY+.13,plateZ+.44],plateMat,plateDim);
+  let plate2Mat = null;
+  if (def.plate2) {
+    plate2Mat = new THREE.MeshStandardMaterial({color:0xc83b3b, emissive:0x330000, roughness:.4});
+    const p2x=def.plate2.x, p2z=cz+def.plate2.z, p2y=def.plate2.y;
+    addVisual([p2x-.525,p2y,p2z-.525],[p2x+.525,p2y+.07,p2z+.525],darkMat);
+    addVisual([p2x-.44,p2y+.07,p2z-.44],[p2x+.44,p2y+.13,p2z+.44],plate2Mat);
+  }
+
+  const door = addSolid([def.doorX[0],0,cz-6.1],[def.doorX[1],2.8,cz-5.9],doorMat);
+
+  const blks = def.blocks.map(([x,z,long,rot,dim=0]) => makeBlock(x, .45, cz+z, long, rot, dim));
+
+  return {def, cz, plateX, plateZ, plateY, plateMat, plate2Mat, plateDimension:plateDim, door, blocks:blks, open:0, latched:false};
+});
+
+// Subtle facility detailing: ceiling light strips and wall panel seams help
+// the rooms feel like one designed research facility instead of plain boxes.
+const stripMat = new THREE.MeshBasicMaterial({color:0xb9e8ff});
+const seamMat = new THREE.MeshStandardMaterial({color:0x9eabb6,roughness:.8});
+for (let i=0;i<ROOMS.length;i++) {
+  const cz = -i*ROOM;
+  const edge = i>=2 ? 8 : 6;
+  for (const x of [-edge+.45,edge-.45]) {
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(.08,.035,8.8),stripMat);
+    strip.position.set(x,3.82,cz); scene.add(strip);
+  }
+  for (let z=-4;z<=4;z+=2) {
+    const seam = new THREE.Mesh(new THREE.BoxGeometry(edge*2-.3,.018,.025),seamMat);
+    seam.position.set(0,.015,cz+z); scene.add(seam);
+  }
+}
+
+// Room 3's second dimension: a glowing bridge. The puzzle cube starts
+// in the normal dimension and must be carried across while the player shifts.
+const room3 = rooms[2];
+const c3 = room3.cz;
+const ghostMat = new THREE.MeshStandardMaterial({color:0x54cfff, emissive:0x123d66, transparent:true, opacity:.82, metalness:.25, roughness:.35});
+addSolid([-1.8,-.2,c3-6],[1.2,0,c3+6],ghostMat,1);
+addSolid([-1.2,0,c3-4.2],[-.3,.12,c3-3.3],ghostMat,1);
+addSolid([.3,0,c3+2.7],[1.1,.12,c3+3.6],ghostMat,1);
+const dimensionCube = makeBlock(-4.5,.45,c3+1.35,.9,0,0);
+
+// Room 4 uses the same two pillars for the bridge and the two final buttons.
+const room4 = rooms[3];
+
+// The headset sits near the entrance to Room 3.
+const headset = new THREE.Group();
+const headsetBand = new THREE.Mesh(new THREE.TorusGeometry(.22,.045,8,24,Math.PI), new THREE.MeshStandardMaterial({color:0x202b38,metalness:.6,roughness:.3}));
+headsetBand.rotation.z = Math.PI;
+headset.add(headsetBand);
+const headsetLens = new THREE.Mesh(new THREE.BoxGeometry(.38,.12,.12), new THREE.MeshStandardMaterial({color:0x46cfff,emissive:0x167aa8,metalness:.5,roughness:.25}));
+headsetLens.position.y = -.08;
+headset.add(headsetLens);
+headset.position.set(-4.5,.28,c3+4.45);
+scene.add(headset);
+let headsetTaken = false;
+let canShift = false;
+
+// power cable for room 1 (visual, coordinates are room-1 global)
+function makeCable(points, radius=.085) {
+  const curve = new THREE.CatmullRomCurve3(points.map(p=>new THREE.Vector3(...p)));
+  scene.add(new THREE.Mesh(new THREE.TubeGeometry(curve,100,radius,10,false), cableMat));
+}
+makeCable([
+  [-4.65,2.38,-2.5],[-5.05,2.38,-2.5],[-5.72,2.15,-2.5],
+  [-5.72,.16,-2.5],[-5.72,.16,-5.35],[-5.35,.16,-5.72],
+  [-3.4,.16,-5.72],[-1.2,.16,-5.72],[.8,.16,-5.72],
+  [2.75,.16,-5.72],[3,.16,-5.9]
+]);
+
+// Room 3 cable connects the alternate-dimension pressure button to its door.
+const room3CablePoints = [[4.0,.2,-26.0],[4.0,.2,-27.0],[5.8,.2,-27.0],[5.8,.2,-29.5],[4.8,.2,-29.9],[3.0,.2,-29.9]];
+const room3CableCurve = new THREE.CatmullRomCurve3(room3CablePoints.map(p=>new THREE.Vector3(...p)));
+const room3Cable = new THREE.Mesh(new THREE.TubeGeometry(room3CableCurve,90,.075,10,false),room3CableMat);
+scene.add(room3Cable);
+
+// Room 4: two separate orange signal cables meet at the same exit door.
+const room4CableMat = new THREE.MeshStandardMaterial({color:0xff7900,emissive:0x4a1900,roughness:.42,metalness:.25});
+function addRoom4Cable(points) {
+  const curve = new THREE.CatmullRomCurve3(points.map(p=>new THREE.Vector3(...p)));
+  scene.add(new THREE.Mesh(new THREE.TubeGeometry(curve,60,.065,8,false),room4CableMat));
+}
+addRoom4Cable([[4.4,.18,-39.1],[4.4,.18,-40.5],[3.2,.18,-41.3],[3,.18,-41.9]]);
+addRoom4Cable([[6.4,.18,-33.4],[6.4,.18,-40.5],[3.2,.18,-41.3],[3,.18,-41.9]]);
+
+// ---------- player / held state ----------
+let yaw=0, pitch=0, feetY=0, vy=0, grounded=true;
+let held=null, grabDist=2.5, done=false;
+const keys = {};
+function showHint(message) { const el = document.getElementById('hint'); if (el) el.textContent = message; }
+const raycaster = new THREE.Raycaster();
+const inHeld = b => held && (b===held || b===held.partner);
+const roomAt = z => Math.min(ROOMS.length-1, Math.max(0, Math.round(-z/ROOM)));
+const solidEnabled = s => s.active && (s.dimension === null || s.dimension === undefined || s.dimension === dimension);
+const blockEnabled = b => b.dimension === dimension;
+
+function solidsHit(box, ignore) {
+  for (const s of solids) if (solidEnabled(s) && boxHit(box, s)) return true;
+  for (const b of blocks) if (blockEnabled(b) && !ignore.has(b) && boxHit(box, blockBox(b))) return true;
+  return false;
+}
+const playerBox = (x,y,z) => ({min:[x-.3,y+.05,z-.3], max:[x+.3,y+1.65,z+.3]});
+
+// ---------- fusing ----------
+function tryFuse() {
+  if (!held) return;
+  // F always splits the pair you are holding first.
+  if (held.partner) {
+    const other = held.partner;
+    held.partner = null;
+    other.partner = null;
+    return;
+  }
+  // Fusion is only allowed when the physical block surfaces are touching.
+  // Check the block bounds, not centre distance, so nearby separated blocks
+  // cannot fuse and touching faces/edges can.
+  let best = null;
+  const a = blockBox(held);
+  for (const c of blocks) {
+    if (!blockEnabled(c) || c === held || c.partner) continue;
+    if (boxesTouch(a, blockBox(c))) { best = c; break; }
+  }
+  if (!best) {
+    showHint('BLOCKS MUST BE TOUCHING TO FUSE. MOVE THEM TOGETHER.');
+    return;
+  }
+  // Fuse the blocks exactly where the player placed them. Do not snap,
+  // straighten, rotate, or rearrange either block. The pair becomes one
+  // rigid group and keeps its current relative position until deliberately split.
+  held.partner = best;
+  best.partner = held;
+  showHint('BLOCKS FUSED. PRESS F AGAIN TO SPLIT.');
+}
+
+// ---------- rotation ----------
+function tryRotate() {
+  if (!held || held.partner) return;
+  const nr = held.rot ^ 1;
+  const box = blockBoxAt(held, held.pos.x, held.pos.y, held.pos.z, nr);
+  if (solidsHit(box, new Set([held]))) return;
+  if (boxHit(box, playerBox(camera.position.x, feetY, camera.position.z))) return;
+  held.rot = nr;
+}
+
+// ---------- grabbing ----------
+function toggleGrab() {
+  if (held) { held = null; return; }
+  raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+  const available = blocks.filter(blockEnabled);
+  const hits = raycaster.intersectObjects(available.map(b=>b.mesh));
+  if (hits.length && hits[0].distance < 8) {
+    held = available.find(b => b.mesh === hits[0].object);
+    grabDist = Math.max(1.7, Math.min(6.5, hits[0].distance));
+    return;
+  }
+  // Forgiving fallback: allow grabbing a nearby block when the crosshair is
+  // just beside it, using both distance and view direction.
+  const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  let candidate = null, score = Infinity;
+  for (const b of available) {
+    const to = b.pos.clone().sub(camera.position);
+    const distance = to.length();
+    if (distance > 5.5 || distance < 0.5) continue;
+    const angle = 1 - dir.dot(to.normalize());
+    if (angle > 0.22) continue;
+    const value = distance + angle * 8;
+    if (value < score) { score = value; candidate = b; }
+  }
+  if (candidate) {
+    held = candidate;
+    grabDist = Math.max(1.7, Math.min(6.5, camera.position.distanceTo(candidate.pos)));
+  } else showHint('LOOK AT A BLOCK AND PRESS E TO PICK IT UP.');
+}
+
+function updateHeld(dt) {
+  if (!held) return;
+  held.tip = null; if (held.partner) held.partner.tip = null;
+  const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  const target = camera.position.clone().addScaledVector(dir, grabDist);
+  target.y = THREE.MathUtils.clamp(target.y, H/2, 4.2);
+  const desired = target.sub(held.pos);
+  const amount = Math.min(1, dt * 10);
+  const delta = desired.multiplyScalar(amount);
+  const group = held.partner ? [held, held.partner] : [held];
+  const ignore = new Set(group);
+  // Resolve each axis separately. A wall blocking one direction no longer
+  // prevents the block from moving along the other free direction.
+  for (const axis of ['x','y','z']) {
+    const step = delta[axis];
+    if (Math.abs(step) < 0.0001) continue;
+    let allowed = true;
+    for (const m of group) {
+      const p = m.pos.clone(); p[axis] += step;
+      const box = blockBoxAt(m, p.x, p.y, p.z);
+      if (solidsHit(box, ignore) || boxHit(box, playerBox(camera.position.x, feetY, camera.position.z))) {
+        allowed = false; break;
+      }
+    }
+    if (allowed) for (const m of group) m.pos[axis] += step;
+  }
+  for (const m of group) m.vy = 0;
+}
+
+// ---------- block physics ----------
+// A resting block (or fused pair) only stays up while its centre sits over
+// solid contact. If the centre passes the edge, it tips off and falls.
+function findContacts(group, ignore) {
+  const cs = [];
+  for (const m of group) {
+    const mb = m.pos.y - H/2;
+    const box = blockBox(m);
+    const check = (surf, top) => {
+      if (top > mb + .02) return;
+      const x0 = Math.max(box.min[0], surf.min[0]), x1 = Math.min(box.max[0], surf.max[0]);
+      const z0 = Math.max(box.min[2], surf.min[2]), z1 = Math.min(box.max[2], surf.max[2]);
+      if (x1 - x0 > EPS && z1 - z0 > EPS) cs.push({top, x0, x1, z0, z1});
+    };
+    for (const s of solids) if (solidEnabled(s)) check(s, s.max[1]);
+    for (const o of blocks) if (blockEnabled(o) && !ignore.has(o)) check(blockBox(o), o.pos.y + H/2);
+  }
+  return cs;
+}
+
+function centreSupported(cs, cx, cz) {
+  const e = 1e-3;
+  const under = c => cz >= c.z0 - e && cz <= c.z1 + e;
+  if (cs.some(c => under(c) && cx >= c.x0 - e && cx <= c.x1 + e)) return true;
+  // bridge case: contact on both sides of the centre
+  const left  = cs.some(c => under(c) && c.x0 < cx);
+  const right = cs.some(c => under(c) && c.x1 > cx);
+  return left && right;
+}
+
+// Tipping: a block whose centre is past the lip rotates about the lip and falls.
+function startTip(group, atR, R, cx, cz) {
+  const ex = atR.reduce((s,c) => s + (c.x0+c.x1)/2, 0) / atR.length;
+  const ez = atR.reduce((s,c) => s + (c.z0+c.z1)/2, 0) / atR.length;
+  let dx = cx-ex, dz = cz-ez;
+  const len = Math.hypot(dx,dz) || 1; dx /= len; dz /= len;
+  // pivot = lip of the contact on the free side
+  const c = atR[0];
+  const ccx = (c.x0+c.x1)/2, ccz = (c.z0+c.z1)/2;
+  const hx = (c.x1-c.x0)/2, hz = (c.z1-c.z0)/2;
+  const tx = Math.abs(dx) > 1e-6 ? hx/Math.abs(dx) : Infinity;
+  const tz = Math.abs(dz) > 1e-6 ? hz/Math.abs(dz) : Infinity;
+  const t = Math.min(tx, tz);
+  const px = ccx + dx*t, pz = ccz + dz*t;
+  const cy = group.reduce((s,m) => s + m.pos.y, 0) / group.length;
+  const s0 = (cx-px)*dx + (cz-pz)*dz;
+  const h = cy - R;
+  const L = Math.max(Math.hypot(s0,h), .3);
+  const phi0 = Math.atan2(h, s0);
+  const tip = {px, pz, dx, dz, R, L, phi0, phi:phi0, w:0};
+  const axis = new THREE.Vector3(dz, 0, -dx);
+  group.forEach(m => { m.tip = tip; m.tiltAxis = axis; });
+}
+
+function tipStep(b, group, dt) {
+  const t = b.tip;
+  t.w = Math.min(4, t.w + 1.5*9.8*Math.max(Math.cos(t.phi),0)/t.L*dt);
+  t.phi -= t.w*dt;
+  const r = t.L*Math.cos(t.phi), y = t.R + t.L*Math.sin(t.phi);
+  const cx = group.reduce((s,m) => s + m.pos.x, 0) / group.length;
+  const cy = group.reduce((s,m) => s + m.pos.y, 0) / group.length;
+  const cz = group.reduce((s,m) => s + m.pos.z, 0) / group.length;
+  const ddx = t.px + r*t.dx - cx, ddy = y - cy, ddz = t.pz + r*t.dz - cz;
+  const theta = t.phi0 - t.phi;
+  group.forEach(m => { m.pos.x += ddx; m.pos.y += ddy; m.pos.z += ddz; m.tilt = theta; });
+  if (t.phi < -Math.PI/2 + .05) {
+    group.forEach(m => { m.tip = null; });
+    b.vy = 0;
+  }
+}
+
+function settleBlocks(dt) {
+  const seen = new Set();
+  for (const b of blocks) {
+    if (!blockEnabled(b) || seen.has(b)) continue;
+    const group = b.partner ? [b, b.partner] : [b];
+    group.forEach(m => seen.add(m));
+    if (inHeld(b)) continue;
+    if (b.tip) { tipStep(b, group, dt); continue; }
+
+    const ignore = new Set(group);
+    const oldBottom = Math.min(...group.map(m => m.pos.y - H/2));
+    const v = Math.max(b.vy - 9.8*dt, -20);
+    let newBottom = oldBottom + v*dt;
+    let landed = false;
+
+    const cs = findContacts(group, ignore);
+    if (cs.length) {
+      const R = Math.max(...cs.map(c => c.top));
+      const atR = cs.filter(c => Math.abs(c.top - R) < .001);
+      const cx = group.reduce((s,m) => s + m.pos.x, 0) / group.length;
+      const cz = group.reduce((s,m) => s + m.pos.z, 0) / group.length;
+      if (newBottom <= R) {
+        if (centreSupported(atR, cx, cz)) {
+          newBottom = R; landed = true;
+          group.forEach(m => { m.tilt = 0; });
+        } else if (group.length === 1) {
+          // Loose blocks can tip off an edge. Fused pairs are one rigid object:
+          // they must never break apart or tip independently when dropped.
+          startTip(group, atR, R, cx, cz);
+          tipStep(b, group, dt);
+          continue;
+        }
+        // A fused pair that is not fully supported simply falls as one unit.
+      }
+    }
+    const dy = newBottom - oldBottom;
+    group.forEach(m => m.pos.y += dy);
+    b.vy = landed ? 0 : v;
+  }
+}
+
+// ---------- player physics ----------
+const f = new THREE.Vector3(), r = new THREE.Vector3();
+function updatePlayer(dt) {
+  f.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+  r.set(Math.cos(yaw), 0, -Math.sin(yaw));
+  const mv = new THREE.Vector3();
+  if (keys.KeyW) mv.add(f);
+  if (keys.KeyS) mv.sub(f);
+  if (keys.KeyD) mv.add(r);
+  if (keys.KeyA) mv.sub(r);
+  if (mv.lengthSq() > 0) mv.normalize().multiplyScalar(3*dt);
+
+  let px = camera.position.x + mv.x, pz = camera.position.z;
+  if (!solidsHit(playerBox(px, feetY, pz), new Set())) camera.position.x = px;
+  px = camera.position.x; pz = camera.position.z + mv.z;
+  if (!solidsHit(playerBox(px, feetY, pz), new Set())) camera.position.z = pz;
+
+  if (keys.Space && grounded) { vy = 5.5; grounded = false; }
+
+  vy -= 15*dt;
+  const nf = feetY + vy*dt;
+  const pb = {min:[px-.3,0,pz-.3], max:[px+.3,0,pz+.3]};
+  if (vy <= 0) {
+    let best = -Infinity;
+    for (const s of solids) {
+      if (!solidEnabled(s) || !ovXZ(pb, s)) continue;
+      if (s.max[1] <= feetY+.05 && s.max[1] > best) best = s.max[1];
+    }
+    for (const b of blocks) {
+      if (!blockEnabled(b) || inHeld(b) || !ovXZ(pb, blockBox(b))) continue;
+      const top = b.pos.y + H/2;
+      if (top <= feetY+.12 && top > best) best = top;
+    }
+    if (best > -Infinity && nf <= best) { feetY = best; vy = 0; grounded = true; }
+    else { feetY = nf; grounded = false; }
+  } else {
+    feetY = nf; grounded = false;
+  }
+}
+
+// respawn at the start of whichever room the player fell in
+function respawn() {
+  const R = rooms[roomAt(camera.position.z)];
+  camera.position.x = R.def.spawn[0];
+  camera.position.z = R.cz + R.def.spawn[1];
+  feetY = 0; vy = 0; grounded = true;
+}
+
+// ---------- plates ----------
+function plateActiveAt(R, x, z, y) {
+  return blocks.some(b => blockEnabled(b) && !inHeld(b) &&
+    Math.abs(b.pos.x-x) < .52 && Math.abs(b.pos.z-z) < .52 &&
+    Math.abs(b.pos.y - H/2 - y) < .12);
+}
+function plateActive(R) {
+  return plateActiveAt(R,R.plateX,R.plateZ,R.plateY) && (R.plateDimension === null || R.plateDimension === dimension);
+}
+
+// ---------- update ----------
+const hintEl = document.getElementById('hint');
+function update(dt) {
+  updateHeld(dt);
+  settleBlocks(dt);
+  updatePlayer(dt);
+
+  const px = camera.position.x, pz = camera.position.z;
+  const idx = roomAt(pz);
+  for (const s of solids) if (s.dimension !== null && s.dimension !== undefined) s.mesh.visible = s.dimension === dimension;
+  scene.traverse(o => { if (o.userData && o.userData.dimension !== null && o.userData.dimension !== undefined) o.visible = o.userData.dimension === dimension; });
+  for (const b of blocks) b.mesh.visible = blockEnabled(b);
+  headset.visible = !headsetTaken;
+
+  let plate1 = false;
+  rooms.forEach((R, i) => {
+    const p = plateActive(R);
+    const p2 = R.def.plate2 ? plateActiveAt(R,R.def.plate2.x,R.cz+R.def.plate2.z,R.def.plate2.y) : false;
+    if (i === 0) plate1 = p;
+    const unlocked = i === 2 ? (p && dimension === 1) : i === 3 ? (p && p2) : p;
+    R.open = THREE.MathUtils.lerp(R.open, unlocked ? 1 : 0, Math.min(1, dt*3));
+    R.door.active = R.open < .5;
+    R.door.mesh.position.y = 1.4 + R.open*3.1;
+    R.plateMat.color.set(p ? 0x35d477 : 0xc83b3b);
+    R.plateMat.emissive.set(p ? 0x073b18 : 0x330000);
+    if (R.plate2Mat) { R.plate2Mat.color.set(p2 ? 0x35d477 : 0xc83b3b); R.plate2Mat.emissive.set(p2 ? 0x073b18 : 0x330000); }
+  });
+  cableMat.color.set(plate1 ? 0x35d477 : 0xff7900);
+  cableMat.emissive.set(plate1 ? 0x073b18 : 0x4a1900);
+  const room3Powered = rooms[2].open > .5 && dimension === 1;
+  room3CableMat.color.set(room3Powered ? 0x35d477 : 0xff7900);
+  room3CableMat.emissive.set(room3Powered ? 0x073b18 : 0x4a1900);
+  const room4Powered = rooms[3].open > .5;
+  room4CableMat.color.set(room4Powered ? 0x35d477 : 0xff7900);
+  room4CableMat.emissive.set(room4Powered ? 0x073b18 : 0x4a1900);
+
+  // final room: walking through its open door completes the test
+  const last = rooms[rooms.length-1];
+  if (last.open > .5 && pz < last.cz - 6.3 && px > 1.9 && px < 4.1) done = true;
+
+  // Touching the red laser floor kills the player and resets them in this room.
+  if (feetY < -3.45) respawn();
+  for (const b of blocks) {
+    if (blockEnabled(b) && b.pos.y < -6) {
+      b.pos.set(b.start.x, b.start.y, b.start.z); b.rot = b.start.rot; b.vy = 0;
+      if (b.partner) { b.partner.partner = null; b.partner = null; }
+    }
+  }
+
+  for (const b of blocks) {
+    if (!blockEnabled(b)) continue;
+    b.mesh.position.copy(b.pos);
+    const yq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), b.rot ? Math.PI/2 : 0);
+    const tq = new THREE.Quaternion().setFromAxisAngle(b.tiltAxis || new THREE.Vector3(0,1,0), b.tilt || 0);
+    b.mesh.quaternion.copy(tq).multiply(yq);
+    b.mesh.material = b.partner ? fusedMat : boxMat;
+  }
+
+  camera.position.y = feetY + 1.7;
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = yaw;
+  camera.rotation.x = pitch;
+
+  const R = rooms[idx];
+  let hint;
+  document.getElementById('status').textContent = idx === 2 && canShift ? (dimension ? 'PERCEPTION // ALTERNATE DIMENSION' : 'RESEARCH FACILITY // NORMAL DIMENSION') : 'RESEARCH FACILITY // TEST 001';
+  if (done) hint = 'TEST COMPLETE';
+  else if (idx === 2 && !headsetTaken && camera.position.distanceTo(headset.position) < 3.2) hint = 'PRESS H TO COLLECT THE DIMENSION HEADSET';
+  else if (idx === 2 && canShift && held) hint = 'G SHIFT DIMENSIONS WITH THE OBJECT · E RELEASE';
+  else if (idx === 2 && canShift && !held) hint = dimension ? 'ALTERNATE DIMENSION // PLACE A BLOCK ON THE BUTTON TO POWER THE DOOR' : 'FACILITY DIMENSION // PRESS G TO ENTER DIMENSION 2';
+  else if (idx === 3 && held) hint = 'E RELEASE · G SHIFT DIMENSIONS · F FUSE/SPLIT · Q/R ROTATE';
+  else if (idx === 3 && R.open < .5 && camera.position.x > 2 && feetY > 1.65) hint = 'CLIMB TO THE LEDGE, THEN PLACE THE CUBE ON THE PRESSURE PLATE';
+  else if (idx === 3 && R.open < .5 && camera.position.x > 2) hint = 'SPLIT THE BRIDGE. STACK ONE BLOCK ON THE OTHER BESIDE THE LEDGE, THEN JUMP UP';
+  else if (idx === 3 && R.open < .5) hint = 'COLLECT BOTH BLOCKS FROM THEIR DIMENSIONS, BRING THEM TOGETHER, THEN FUSE A BRIDGE';
+  else if (held) hint = held.partner ? 'E RELEASE · F SPLIT · WHEEL DISTANCE' : 'E RELEASE · F FUSE · Q/R ROTATE · WHEEL DISTANCE';
+  if (idx === 3 && !done) {
+    const a = plateActive(rooms[3]);
+    const b = plateActiveAt(rooms[3],rooms[3].def.plate2.x,rooms[3].cz+rooms[3].def.plate2.z,rooms[3].def.plate2.y);
+    hint = `ROOM 4: BRIDGE THE GAP, THEN PLACE BOTH PILLARS ON THE BUTTONS  [${a?'1/2':'0/2'}] [${b?'2/2':'0/2'}]`;
+  }
+  else if (R.open > .5) hint = idx === rooms.length-1 ? 'WALK THROUGH THE DOOR' : 'ACCESS DOOR UNLOCKED — MOVE THROUGH';
+  else hint = R.def.hint;
+  hintEl.textContent = hint;
+}
+
+// ---------- input ----------
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'KeyE' && !e.repeat) toggleGrab();
+  if (e.code === 'KeyH' && !e.repeat && !headsetTaken && camera.position.distanceTo(headset.position) < 3.2) { headsetTaken = true; canShift = true; }
+  if (e.code === 'KeyG' && !e.repeat && canShift) {
+    dimension = 1 - dimension;
+    // Anything currently being carried shifts with the player. Once released,
+    // it stays in whichever dimension it was last carried into.
+    if (held) {
+      const carried = held.partner ? [held, held.partner] : [held];
+      for (const b of carried) b.dimension = dimension;
+    }
+    scene.background.set(dimension ? 0x101d35 : 0xfafafa);
+    scene.fog.color.set(dimension ? 0x101d35 : 0xfafafa);
+  }
+  if (e.code === 'KeyF' && !e.repeat) tryFuse();
+  if (e.code === 'KeyQ' && !e.repeat) tryRotate();
+  if (e.code === 'KeyR' && !e.repeat) tryRotate();
+  if (e.code === 'Space') e.preventDefault();
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+document.addEventListener('mousemove', e => {
+  if (document.pointerLockElement !== renderer.domElement) return;
+  yaw -= e.movementX * .002;
+  pitch = Math.max(-1.4, Math.min(1.4, pitch - e.movementY * .002));
+});
+document.addEventListener('wheel', e => {
+  if (!held) return;
+  grabDist = Math.max(1.5, Math.min(6, grabDist + e.deltaY * .005));
+});
+
+// ---------- loop ----------
+respawn();
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  update(Math.min(clock.getDelta(), .05));
+  renderer.render(scene, camera);
+}
+animate();
+
+// ---------- menus ----------
+const overlay = document.getElementById('overlay');
+const menuTitle = document.getElementById('menuTitle');
+const menuSubtitle = document.getElementById('menuSubtitle');
+const menuButtons = document.getElementById('menuButtons');
+const menuFoot = document.getElementById('menuFoot');
+let gameStarted = false;
+let menuMode = 'title';
+function addMenuButton(label, action) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.addEventListener('click', action);
+  menuButtons.appendChild(b);
+}
+function showMenu(mode) {
+  menuMode = mode;
+  overlay.style.display = 'flex';
+  menuButtons.innerHTML = '';
+  menuFoot.style.display = mode === 'controls' ? 'none' : 'block';
+  if (mode === 'title') {
+    menuTitle.textContent = 'PERCEPTION';
+    menuSubtitle.textContent = 'EXPERIMENT 001';
+    addMenuButton('ENTER TEST CHAMBER', () => { gameStarted = true; renderer.domElement.requestPointerLock(); });
+    menuFoot.textContent = 'WASD move · Space jump · Mouse look · E grab/release · F fuse/split · Q/R rotate · H headset · G dimensions · Esc pause';
+  } else if (mode === 'pause') {
+    menuTitle.textContent = 'PAUSED';
+    menuSubtitle.textContent = 'TEST CHAMBER SUSPENDED';
+    addMenuButton('RESUME', () => renderer.domElement.requestPointerLock());
+    addMenuButton('RESTART LEVEL', restartCurrentLevel);
+    addMenuButton('CONTROLS', () => showMenu('controls'));
+    addMenuButton('MAIN MENU', () => { document.exitPointerLock(); gameStarted = false; showMenu('title'); });
+    menuFoot.textContent = 'Press Esc to resume';
+  } else if (mode === 'controls') {
+    menuTitle.textContent = 'CONTROLS';
+    menuSubtitle.textContent = 'HOW TO PLAY';
+    const p = document.createElement('p');
+    p.style.lineHeight = '1.9';
+    p.innerHTML = 'WASD · Move<br>Mouse · Look around<br>Space · Jump<br>E · Grab / release blocks<br>F · Fuse / split blocks<br>Q / R · Rotate blocks<br>H · Collect headset<br>G · Switch dimensions<br>Esc · Pause';
+    menuButtons.appendChild(p);
+    addMenuButton('BACK', () => showMenu('pause'));
+    menuFoot.style.display = 'none';
+  }
+}
+function restartCurrentLevel() {
+  const idx = roomAt(camera.position.z);
+  const R = rooms[idx];
+  held = null;
+  dimension = 0;
+  scene.background.set(0xfafafa);
+  scene.fog.color.set(0xfafafa);
+  for (const b of R.blocks) {
+    b.pos.set(b.start.x,b.start.y,b.start.z);
+    b.rot = b.start.rot;
+    b.dimension = b.start.dimension;
+    b.vy = 0; b.partner = null; b.tip = null; b.tilt = 0;
+  }
+  R.blocks.forEach(b => { if (b.partner) b.partner.partner = null; });
+  R.open = 0; R.latched = false; R.door.active = true; R.door.mesh.position.y = 1.4;
+  if (idx === 2) { headsetTaken = false; canShift = false; }
+  camera.position.x = R.def.spawn[0];
+  camera.position.z = R.cz + R.def.spawn[1];
+  feetY = 0; vy = 0; grounded = true;
+  renderer.domElement.requestPointerLock();
+}
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape' && gameStarted) {
+    if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
+    else if (menuMode === 'pause') renderer.domElement.requestPointerLock();
+  }
+});
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement === renderer.domElement) overlay.style.display = 'none';
+  else if (gameStarted) showMenu('pause');
+  else showMenu('title');
+});
+showMenu('title');
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
